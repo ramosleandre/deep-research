@@ -45,6 +45,7 @@ class DeepResearcher:
     def _collect_docs(self, subq: str) -> List[str]:
         if self.site:
             return crawl_site(self.site, limit_pages=40, max_depth=2)
+        log.info("🔍 DuckDuckGo query → %s", subq)
         urls = self._search_ddg(subq)
         import requests
         docs = []
@@ -62,25 +63,93 @@ class DeepResearcher:
                 pass
         return docs
 
+    # ----- résumé du contexte déjà indexé -----
+    def _coverage(self, k: int = 12) -> str:
+        qv = self.embedder.encode([self.question])[0].reshape(1, -1)
+        ctx = "\n\n".join(t for t, _ in self.db.search(qv, k=k))
+        prompt = (
+            "En 5 phrases maxi, résume le CONTEXTE (extraits) ci‑dessous:\n"
+            f"{ctx}\n\nRÉSUMÉ:"
+        )
+        return self.llm.chat([{"role": "user", "content": prompt}])
+
+    # ----- deux points encore flous -----
+    def _gaps(self, coverage: str) -> list[str]:
+        prompt = (
+            "Voici un résumé partiel d'une recherche.\n"
+            f"{coverage}\n\n"
+            "Donne 2 aspects IMPORTANTS qui ne sont pas encore couverts, "
+            "sous forme de puces courtes."
+        )
+        out = self.llm.chat([{"role": "user", "content": prompt}])
+        return [l.strip("•- ") for l in out.splitlines() if l.strip()]
+
     # ---------------- boucle itérative -----------------
     def run(self) -> str:
-        for it in range(1, self.max_iters + 1):
-            log.info("\n=== ITERATION %d : PLANNING ===", it)
-            subtasks = make_plan(self.llm, self.question, self.max_tasks)
-            for idx, s in enumerate(subtasks, 1):
-                log.info("PLAN %d.%d ➜ %s", it, idx, s)
+        done: list[str] = []      # sous‑questions déjà traitées
+        context = ""              # résumé courant
 
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=len(subtasks)
-            ) as ex:
+        for it in range(1, self.max_iters + 1):
+            log.info("\n=== ITERATION %d : PLANNING ===", it)
+
+            # ---------- planification ----------
+            subtasks = make_plan(
+                self.llm, self.question, self.max_tasks,
+                context=context, done=done, gaps=[]        # gaps vide au 1er tour
+            )
+            if not subtasks:
+                log.info("Pas de nouvelles sous‑questions ➜ stop.")
+                break
+
+            for idx, s in enumerate(subtasks, 1):
+                log.info("PLAN %d.%d ➜ %s", it, idx, s)
+
+            # ---------- collecte ----------
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(subtasks)) as ex:
                 ex.map(self._process_task, subtasks)
 
+            # ---------- logs URLs ----------
             log.info("--- VISITED URLS (%d) ---", len(self._visited))
             for u in itertools.islice(self._visited, 10):
-                log.info("· %s", u)
+                log.info("· %s", u)
             if len(self._visited) > 10:
                 log.info("… %d autres", len(self._visited) - 10)
 
+            # ---------- coverage + gaps ----------
+        # ---------- coverage + gaps ----------
+            coverage = self._coverage()
+            log.info("--- COVERAGE RESUME ---\n%s", coverage)
+
+            gaps = self._gaps(coverage)[:2]
+            import re
+            _CLEAN = re.compile(r"^[•*\\-\\s]+")
+            gaps = [_CLEAN.sub("", g).strip() for g in gaps]   # nettoie bullet points
+            gaps = [g for g in gaps if "aspects importants" not in g.lower()]  # filtre les phrases bateaux
+
+            if gaps:
+                log.info("--- UNKNOWN ASPECTS ---")
+                for g in gaps:
+                    log.info("❓ %s", g)
+
+                # <--  NOUVEAU  -->  injecte les gaps comme futures sous-questions
+                # Stocke-les pour la boucle SUIVANTE
+                done.extend(subtasks)          # déjà traitées
+                # convertit les gaps en sous-questions pour la prochaine planif
+                subtasks = [g for g in gaps if g not in done]
+                if subtasks:
+                    log.info("Injecte gaps comme nouvelles sous-questions : %s", subtasks)
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=len(subtasks)) as ex:
+                        ex.map(self._process_task, subtasks)
+                    done.extend(subtasks)      # marque aussi comme traitées
+
+                context = self._coverage()     # résumé après l'injection
+                continue 
+
+            # ---------- prépare l’itération suivante ----------
+            done.extend(subtasks)
+            context = coverage
+
+        # ---------- synthèse finale ----------
         log.info("=== FINISH TOUCH : SYNTHÈSE ===")
         answer = self._synth()
         log.info("=== DONE ===")
