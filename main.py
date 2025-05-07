@@ -15,8 +15,7 @@ def cli():
     ap.add_argument("-p", "--provider", choices=["openai", "ollama"], default="openai")
     ap.add_argument("--model", help="Nom du modèle (OpenAI ou Ollama)")
     ap.add_argument("-m", "--max_tasks", type=int, default=3)
-    ap.add_argument("--max_iters", type=int, default=2,
-                    help="Nombre d’itérations plan→collecte→replan (≥1)")
+    ap.add_argument("--max_iters", type=int, default=2)
     ap.add_argument("--debug", action="store_true")
     args = ap.parse_args()
 

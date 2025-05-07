@@ -3,14 +3,11 @@ from bs4 import BeautifulSoup
 from typing import List
 
 log = logging.getLogger(__name__)
-TAG_RE = re.compile(r"<[^>]+>")
 
 def clean(html: str) -> str:
-    txt = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
-    return re.sub(r"\s+", " ", txt)
+    return BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
 
-def crawl_site(root: str, limit_pages: int = 30, max_depth: int = 2) -> List[str]:
-    """BFS interne au domaine root (http(s)://example.com)"""
+def crawl_site(root: str, limit_pages: int = 40, max_depth: int = 2) -> List[str]:
     seen, texts = set(), []
     q = collections.deque([(root, 0)])
     domain = urllib.parse.urlparse(root).netloc
@@ -29,7 +26,7 @@ def crawl_site(root: str, limit_pages: int = 30, max_depth: int = 2) -> List[str
                     link = urllib.parse.urljoin(url, a["href"])
                     if urllib.parse.urlparse(link).netloc == domain:
                         q.append((link, depth + 1))
-        except Exception as e:
-            log.debug("crawl error %s : %s", url, e)
-    log.info("Crawl %s → %d pages", domain, len(texts))
+        except Exception:
+            pass
+    log.info("[SCRAPER] %d pages crawlées sur %s", len(texts), domain)
     return texts
